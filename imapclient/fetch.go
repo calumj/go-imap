@@ -28,11 +28,16 @@ func (c *Client) Fetch(numSet imap.NumSet, options *imap.FetchOptions) *FetchCom
 
 	cmd := &FetchCommand{
 		numSet: numSet,
-		msgs:   make(chan *FetchMessageData, 128),
+
+		msgs: make(chan *FetchMessageData, 128),
 	}
 	enc := c.beginCommand(uidCmdName("FETCH", numKind), cmd)
 	enc.SP().NumSet(numSet).SP()
-	writeFetchItems(enc.Encoder, numKind, options)
+	if c.options.extensions != nil {
+		writeFetchItemsWithExtensions(enc.Encoder, numKind, options, c.options.extensions.fetchExtensions)
+	} else {
+		writeFetchItems(enc.Encoder, numKind, options)
+	}
 	if options.ChangedSince != 0 {
 		enc.SP().Special('(').Atom("CHANGEDSINCE").SP().ModSeq(options.ChangedSince).Special(')')
 	}
@@ -41,6 +46,10 @@ func (c *Client) Fetch(numSet imap.NumSet, options *imap.FetchOptions) *FetchCom
 }
 
 func writeFetchItems(enc *imapwire.Encoder, numKind imapwire.NumKind, options *imap.FetchOptions) {
+	writeFetchItemsWithExtensions(enc, numKind, options, nil)
+}
+
+func writeFetchItemsWithExtensions(enc *imapwire.Encoder, numKind imapwire.NumKind, options *imap.FetchOptions, extensions map[string]FetchExtension) {
 	listEnc := enc.BeginList()
 
 	// Ensure we request UID as the first data item for UID FETCH, to be safer.
@@ -58,10 +67,15 @@ func writeFetchItems(enc *imapwire.Encoder, numKind imapwire.NumKind, options *i
 		"RFC822.SIZE":   options.RFC822Size,
 		"MODSEQ":        options.ModSeq,
 	}
+
 	for k, req := range m {
 		if req {
 			listEnc.Item().Atom(k)
 		}
+	}
+
+	for attr := range extensions {
+		listEnc.Item().Atom(attr)
 	}
 
 	for _, bs := range options.BodySection {
@@ -292,6 +306,13 @@ type FetchItemData interface {
 	fetchItemData()
 }
 
+type FetchItemDataExtension struct {
+	Attr  string
+	Value any
+}
+
+func (f *FetchItemDataExtension) fetchItemData() {}
+
 var (
 	_ FetchItemData = FetchItemDataBodySection{}
 	_ FetchItemData = FetchItemDataBinarySection{}
@@ -412,6 +433,7 @@ type FetchMessageBuffer struct {
 	BinarySection     map[*imap.FetchItemBinarySection][]byte
 	BinarySectionSize []FetchItemDataBinarySectionSize
 	ModSeq            uint64 // requires CONDSTORE
+	Extensions        map[string]any
 }
 
 func (buf *FetchMessageBuffer) populateItemData(item FetchItemData) error {
@@ -450,6 +472,11 @@ func (buf *FetchMessageBuffer) populateItemData(item FetchItemData) error {
 		buf.BinarySectionSize = append(buf.BinarySectionSize, item)
 	case FetchItemDataModSeq:
 		buf.ModSeq = item.ModSeq
+	case *FetchItemDataExtension:
+		if buf.Extensions == nil {
+			buf.Extensions = make(map[string]any, 1)
+		}
+		buf.Extensions[item.Attr] = item.Value
 	default:
 		panic(fmt.Errorf("unsupported fetch item data %T", item))
 	}
@@ -659,7 +686,19 @@ func (c *Client) handleFetch(seqNum uint32) error {
 			}
 			item = FetchItemDataModSeq{ModSeq: modSeq}
 		default:
-			return fmt.Errorf("unsupported msg-att name: %q", attName)
+
+			extension, ok := c.options.extensions.fetchExtensions[attName]
+			if !ok {
+				return fmt.Errorf("unsupported msg-att name: %q", attName)
+			}
+			data, err := extension.Populate(dec)
+			if err != nil {
+				return err
+			}
+			if err := dec.Err(); err != nil {
+				return err
+			}
+			item = data
 		}
 
 		numAtts++

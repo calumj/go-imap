@@ -32,7 +32,7 @@ func returnSearchOptions(options *imap.SearchOptions) []string {
 	return l
 }
 
-func (c *Client) search(numKind imapwire.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) *SearchCommand {
+func (c *Client) search(numKind imapwire.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions, extensions []SearchExtension) *SearchCommand {
 	// The IMAP4rev2 SEARCH charset defaults to UTF-8. When UTF8=ACCEPT is
 	// enabled, specifying any CHARSET is invalid. For IMAP4rev1 the default is
 	// undefined and only US-ASCII support is required. What's more, some
@@ -67,19 +67,20 @@ func (c *Client) search(numKind imapwire.NumKind, criteria *imap.SearchCriteria,
 	if charset != "" {
 		enc.Atom("CHARSET").SP().Atom(charset).SP()
 	}
-	writeSearchKey(enc.Encoder, criteria)
+
+	writeSearchKey(enc.Encoder, criteria, extensions)
 	enc.end()
 	return cmd
 }
 
 // Search sends a SEARCH command.
-func (c *Client) Search(criteria *imap.SearchCriteria, options *imap.SearchOptions) *SearchCommand {
-	return c.search(imapwire.NumKindSeq, criteria, options)
+func (c *Client) Search(criteria *imap.SearchCriteria, options *imap.SearchOptions, extensions ...SearchExtension) *SearchCommand {
+	return c.search(imapwire.NumKindSeq, criteria, options, extensions)
 }
 
 // UIDSearch sends a UID SEARCH command.
-func (c *Client) UIDSearch(criteria *imap.SearchCriteria, options *imap.SearchOptions) *SearchCommand {
-	return c.search(imapwire.NumKindUID, criteria, options)
+func (c *Client) UIDSearch(criteria *imap.SearchCriteria, options *imap.SearchOptions, extensions ...SearchExtension) *SearchCommand {
+	return c.search(imapwire.NumKindUID, criteria, options, extensions)
 }
 
 func (c *Client) handleSearch() error {
@@ -156,7 +157,7 @@ func (cmd *SearchCommand) Wait() (*imap.SearchData, error) {
 	return &cmd.data, cmd.cmd.Wait()
 }
 
-func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria) {
+func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria, extensions []SearchExtension) {
 	enc.Special('(')
 
 	firstItem := true
@@ -234,6 +235,9 @@ func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria) {
 	if criteria.Smaller > 0 {
 		encodeItem().Atom("SMALLER").SP().Number64(criteria.Smaller)
 	}
+	for _, extension := range extensions {
+		encodeItem().Atom(extension.Attr()).SP().Atom(extension.Value())
+	}
 
 	if modSeq := criteria.ModSeq; modSeq != nil {
 		encodeItem().Atom("MODSEQ")
@@ -250,13 +254,13 @@ func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria) {
 
 	for _, not := range criteria.Not {
 		encodeItem().Atom("NOT").SP()
-		writeSearchKey(enc, &not)
+		writeSearchKey(enc, &not, nil)
 	}
 	for _, or := range criteria.Or {
 		encodeItem().Atom("OR").SP()
-		writeSearchKey(enc, &or[0])
+		writeSearchKey(enc, &or[0], nil)
 		enc.SP()
-		writeSearchKey(enc, &or[1])
+		writeSearchKey(enc, &or[1], nil)
 	}
 
 	if firstItem {

@@ -76,6 +76,17 @@ type Options struct {
 	UnilateralDataHandler *UnilateralDataHandler
 	// Decoder for RFC 2047 words.
 	WordDecoder *mime.WordDecoder
+	//extensions
+	extensions *extensions
+}
+
+func (options *Options) WithFetchExtension(f FetchExtension) {
+	if options.extensions == nil {
+		options.extensions = &extensions{
+			fetchExtensions: make(map[string]FetchExtension, 1),
+		}
+	}
+	options.extensions.fetchExtensions[f.Attr()] = f
 }
 
 func (options *Options) wrapReadWriter(rw io.ReadWriter) io.ReadWriter {
